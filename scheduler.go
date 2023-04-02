@@ -88,7 +88,7 @@ func (s *Scheduler) executeTask(task *Task) {
 	case <-done:
 		log.Infof("Finished task: %s", task.Name)
 	case <-ctx.Done():
-		log.Warnf("Task reached its deadline and was terminated")
+		log.Warnf("Task %s reached its deadline and was terminated", task.Name)
 	}
 
 	s.mu.Lock()
