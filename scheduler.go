@@ -67,7 +67,13 @@ func (s *Scheduler) executeTask(task *Task) {
 	s.running[task.Name] = true
 	s.mu.Unlock()
 
-	s.logger.Infof("Starting task: %s", task.Name)
+	log := s.logger.WithFields(logrus.Fields{
+		"name":     task.Name,
+		"interval": task.Interval,
+		"deadline": task.Deadline,
+	})
+
+	log.Infof("Starting task: %s", task.Name)
 
 	ctx, cancel := context.WithTimeout(context.Background(), task.Deadline)
 	defer cancel()
@@ -80,9 +86,9 @@ func (s *Scheduler) executeTask(task *Task) {
 
 	select {
 	case <-done:
-		s.logger.Infof("Finished task: %s", task.Name)
+		log.Infof("Finished task: %s", task.Name)
 	case <-ctx.Done():
-		s.logger.Warnf("Task %s reached its deadline and was terminated", task.Name)
+		log.Warnf("Task reached its deadline and was terminated")
 	}
 
 	s.mu.Lock()
