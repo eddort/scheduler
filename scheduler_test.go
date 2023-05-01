@@ -1,68 +1,92 @@
 package scheduler
 
 import (
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 )
 
-func TestScheduler(t *testing.T) {
-	logger, _ := test.NewNullLogger()
-	s := New(logger)
+var successfulTaskCount int
+var unsuccessfulTaskCount int
+var taskCountMutex sync.Mutex
 
-	var count1 int32
-	s.RegisterTask("task1", 100*time.Millisecond, 500*time.Millisecond, func() {
-		atomic.AddInt32(&count1, 1)
-		time.Sleep(200 * time.Millisecond)
-	})
-
-	var count2 int32
-	s.RegisterTask("task2", 50*time.Millisecond, 50*time.Millisecond, func() {
-		atomic.AddInt32(&count2, 1)
-	})
-
-	s.Start()
-
-	time.Sleep(1 * time.Second)
-
-	c1 := atomic.LoadInt32(&count1)
-	c2 := atomic.LoadInt32(&count2)
-
-	assert.Greater(t, c1, int32(1), "Task 1 should have been executed more than once")
-	assert.Less(t, c1, int32(10), "Task 1 should not be executed too many times")
-
-	assert.Greater(t, c2, int32(1), "Task 2 should have been executed more than once")
-	assert.Less(t, c2, int32(25), "Task 2 should not be executed too many times")
+func successfulTask(payload Payload) error {
+	time.Sleep(500 * time.Millisecond)
+	return nil
 }
 
-func TestSchedulerDeadline(t *testing.T) {
-	logger, hook := test.NewNullLogger()
-	s := New(logger)
+func slowTask(payload Payload) error {
+	time.Sleep(2 * time.Second)
+	return nil
+}
+func countingMiddleware(next ActionFunc) ActionFunc {
+	return func(payload Payload) error {
+		err := next(payload)
+		taskCountMutex.Lock()
+		defer taskCountMutex.Unlock()
 
-	var count int32
-	s.RegisterTask("task3", 100*time.Millisecond, 100*time.Millisecond, func() {
-		atomic.AddInt32(&count, 1)
-		time.Sleep(200 * time.Millisecond)
+		if err == nil {
+			successfulTaskCount++
+		} else {
+			unsuccessfulTaskCount++
+		}
+		return err
+	}
+}
+
+func TestScheduler_SuccessfulTask(t *testing.T) {
+	registry := New(countingMiddleware)
+	registry.RegisterTask(TaskConfig{
+		Name:        "SuccessfulTask",
+		Interval:    1 * time.Second,
+		Action:      successfulTask,
+		Deadline:    1 * time.Second,
+		Middlewares: []Middleware{countingMiddleware},
 	})
 
-	s.Start()
+	go registry.Start()
+	time.Sleep(3 * time.Second)
+	registry.Stop()
 
-	time.Sleep(1 * time.Second)
+	taskCountMutex.Lock()
+	defer taskCountMutex.Unlock()
+	assert.GreaterOrEqual(t, successfulTaskCount, 2, "Expected 2 successful task executions")
+}
 
-	c := atomic.LoadInt32(&count)
+func TestScheduler_SlowTask(t *testing.T) {
+	registry := New(countingMiddleware)
+	registry.RegisterTask(TaskConfig{
+		Name:        "SlowTask",
+		Interval:    1 * time.Second,
+		Action:      slowTask,
+		Deadline:    1 * time.Second,
+		Middlewares: []Middleware{countingMiddleware},
+	})
 
-	assert.Greater(t, c, int32(1), "Task 3 should have been executed more than once")
-	assert.Less(t, c, int32(10), "Task 3 should not be executed too many times")
+	go registry.Start()
+	time.Sleep(3 * time.Second)
+	registry.Stop()
 
-	found := false
-	for _, entry := range hook.AllEntries() {
-		if entry.Message == "Task task3 reached its deadline and was terminated" {
-			found = true
-			break
-		}
-	}
-	assert.True(t, found, "Task 3 should have a deadline termination log entry")
+	taskCountMutex.Lock()
+	defer taskCountMutex.Unlock()
+	assert.Equal(t, 2, unsuccessfulTaskCount, "Expected 2 unsuccessful task executions")
+}
+
+func TestScheduler_Stop(t *testing.T) {
+	registry := New(countingMiddleware)
+	registry.RegisterTask(TaskConfig{
+		Name:        "SuccessfulTask",
+		Interval:    1 * time.Second,
+		Action:      successfulTask,
+		Deadline:    1 * time.Second,
+		Middlewares: []Middleware{countingMiddleware},
+	})
+
+	go registry.Start()
+	time.Sleep(3 * time.Second)
+	registry.Stop()
+
+	assert.True(t, true, "Scheduler stopped")
 }

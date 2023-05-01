@@ -1,28 +1,56 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/eddort/scheduler"
-	"github.com/sirupsen/logrus"
 )
 
 func main() {
-	logger := logrus.New()
-	s := scheduler.New(logger)
 
-	s.RegisterTask("task1", 1*time.Second, 1*time.Second, func() {
-		fmt.Println("Executing task 1")
-		time.Sleep(2 * time.Second)
-	})
+	counter := 0
 
-	s.RegisterTask("task2", 2*time.Second, 1*time.Second, func() {
-		fmt.Println("Executing task with deadline error 2")
-		time.Sleep(1 * time.Second)
-	})
+	registry := scheduler.New()
 
-	s.Start()
+	taskConfig := scheduler.TaskConfig{
+		Name:     "PrintTime",
+		Interval: 10 * time.Microsecond,
+		Deadline: 3 * time.Second,
+		Action: func(payload scheduler.Payload) error {
+			fmt.Println("Current time:", time.Now())
 
-	select {}
+			if counter%2 == 0 {
+				time.Sleep(1 * time.Second)
+				return nil
+			}
+			return errors.New("what's up")
+		},
+		Middlewares: []scheduler.Middleware{func(next scheduler.ActionFunc) scheduler.ActionFunc {
+			return func(payload scheduler.Payload) error {
+				counter++
+
+				fmt.Println("Before task execution:", payload.Name)
+
+				err := next(payload)
+
+				if err != nil {
+					fmt.Println("Task finished with an error:", err)
+				} else {
+					fmt.Println("Task finished correctly")
+				}
+
+				return err
+			}
+		}},
+	}
+
+	// Register and start the task
+	registry.RegisterTask(taskConfig)
+	go func() {
+		time.Sleep(20 * time.Second)
+		registry.Stop()
+	}()
+	registry.Start()
 }
