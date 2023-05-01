@@ -16,12 +16,13 @@ func main() {
 
 	taskConfig := scheduler.TaskConfig{
 		Name:     "PrintTime",
-		Interval: 2 * time.Second,
+		Interval: 10 * time.Microsecond,
 		Deadline: 3 * time.Second,
 		Action: func(payload scheduler.Payload) error {
 			fmt.Println("Current time:", time.Now())
-			time.Sleep(1 * time.Second)
+
 			if counter%2 == 0 {
+				time.Sleep(1 * time.Second)
 				return nil
 			}
 			return errors.New("what's up")

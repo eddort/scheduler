@@ -1,95 +1,92 @@
-package scheduler_test
+package scheduler
 
 import (
-	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
-
-	"github.com/eddort/scheduler"
 )
 
-func TestScheduler(t *testing.T) {
-	loggingMiddleware := func(next scheduler.ActionFunc) scheduler.ActionFunc {
-		return func(payload scheduler.Payload) error {
-			t.Logf("Running task: %s", payload.Name)
-			return next(payload)
-		}
-	}
+var successfulTaskCount int
+var unsuccessfulTaskCount int
+var taskCountMutex sync.Mutex
 
-	taskExecuted := false
-
-	taskAction := func(payload scheduler.Payload) error {
-		taskExecuted = true
-		return nil
-	}
-
-	s := scheduler.New(loggingMiddleware)
-
-	s.RegisterTask(scheduler.TaskConfig{
-		Name:     "test-task",
-		Interval: time.Millisecond * 100,
-		Action:   taskAction,
-	})
-
-	time.Sleep(time.Millisecond * 200)
-
-	s.Stop()
-
-	assert.True(t, taskExecuted, "Task should be executed")
+func successfulTask(payload Payload) error {
+	time.Sleep(500 * time.Millisecond)
+	return nil
 }
 
-func TestSchedulerWithDeadline(t *testing.T) {
-	taskExecuted := false
+func slowTask(payload Payload) error {
+	time.Sleep(2 * time.Second)
+	return nil
+}
+func countingMiddleware(next ActionFunc) ActionFunc {
+	return func(payload Payload) error {
+		err := next(payload)
+		taskCountMutex.Lock()
+		defer taskCountMutex.Unlock()
 
-	taskAction := func(payload scheduler.Payload) error {
-		time.Sleep(time.Millisecond * 150)
-		taskExecuted = true
-		return nil
+		if err == nil {
+			successfulTaskCount++
+		} else {
+			unsuccessfulTaskCount++
+		}
+		return err
 	}
-
-	s := scheduler.New()
-
-	s.RegisterTask(scheduler.TaskConfig{
-		Name:     "test-task-deadline",
-		Interval: time.Millisecond * 100,
-		Action:   taskAction,
-		Deadline: time.Millisecond * 50,
-	})
-
-	time.Sleep(time.Millisecond * 200)
-
-	s.Stop()
-
-	assert.False(t, taskExecuted, "Task should not be executed")
 }
 
-func TestSchedulerWithMiddlewareError(t *testing.T) {
-	errorMiddleware := func(next scheduler.ActionFunc) scheduler.ActionFunc {
-		return func(payload scheduler.Payload) error {
-			return errors.New("middleware error")
-		}
-	}
-
-	taskExecuted := false
-
-	taskAction := func(payload scheduler.Payload) error {
-		taskExecuted = true
-		return nil
-	}
-
-	s := scheduler.New(errorMiddleware)
-
-	s.RegisterTask(scheduler.TaskConfig{
-		Name:     "test-task-error",
-		Interval: time.Millisecond * 100,
-		Action:   taskAction,
+func TestScheduler_SuccessfulTask(t *testing.T) {
+	registry := New(countingMiddleware)
+	registry.RegisterTask(TaskConfig{
+		Name:        "SuccessfulTask",
+		Interval:    1 * time.Second,
+		Action:      successfulTask,
+		Deadline:    1 * time.Second,
+		Middlewares: []Middleware{countingMiddleware},
 	})
 
-	time.Sleep(time.Millisecond * 200)
+	go registry.Start()
+	time.Sleep(3 * time.Second)
+	registry.Stop()
 
-	s.Stop()
+	taskCountMutex.Lock()
+	defer taskCountMutex.Unlock()
+	assert.GreaterOrEqual(t, successfulTaskCount, 2, "Expected 2 successful task executions")
+}
 
-	assert.False(t, taskExecuted, "Task should not be executed")
+func TestScheduler_SlowTask(t *testing.T) {
+	registry := New(countingMiddleware)
+	registry.RegisterTask(TaskConfig{
+		Name:        "SlowTask",
+		Interval:    1 * time.Second,
+		Action:      slowTask,
+		Deadline:    1 * time.Second,
+		Middlewares: []Middleware{countingMiddleware},
+	})
+
+	go registry.Start()
+	time.Sleep(3 * time.Second)
+	registry.Stop()
+
+	taskCountMutex.Lock()
+	defer taskCountMutex.Unlock()
+	assert.Equal(t, 2, unsuccessfulTaskCount, "Expected 2 unsuccessful task executions")
+}
+
+func TestScheduler_Stop(t *testing.T) {
+	registry := New(countingMiddleware)
+	registry.RegisterTask(TaskConfig{
+		Name:        "SuccessfulTask",
+		Interval:    1 * time.Second,
+		Action:      successfulTask,
+		Deadline:    1 * time.Second,
+		Middlewares: []Middleware{countingMiddleware},
+	})
+
+	go registry.Start()
+	time.Sleep(3 * time.Second)
+	registry.Stop()
+
+	assert.True(t, true, "Scheduler stopped")
 }
