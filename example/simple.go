@@ -16,13 +16,14 @@ func main() {
 		Deadline: 3 * time.Second,
 		Action: func(payload scheduler.Payload) error {
 			fmt.Println("Current time:", time.Now())
+			time.Sleep(30 * time.Second)
 			return nil
 		},
 		Middlewares: []scheduler.Middleware{func(next scheduler.ActionFunc) scheduler.ActionFunc {
 			return func(payload scheduler.Payload) error {
 				fmt.Println("Before task execution:", payload.Name)
 				err := next(payload)
-				fmt.Println("After task execution:", payload.Name)
+				fmt.Println("After task execution:", err)
 				return err
 			}
 		}},

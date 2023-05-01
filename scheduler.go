@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 )
@@ -31,17 +32,23 @@ type Payload struct {
 type ActionFunc func(Payload) error
 type Middleware func(ActionFunc) ActionFunc
 
-func BuildMiddlewareChain(action ActionFunc, middlewares *[]Middleware) ActionFunc {
-	if middlewares == nil {
-		return action
-	}
+func runWithTimeout(fn func(Payload) error, timeout time.Duration) ActionFunc {
+	return func(payload Payload) error {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
 
-	chain := action
-	for i := len(*middlewares) - 1; i >= 0; i-- {
-		chain = (*middlewares)[i](chain)
-	}
+		resultChannel := make(chan error, 1)
+		go func() {
+			resultChannel <- fn(payload)
+		}()
 
-	return chain
+		select {
+		case <-ctx.Done():
+			return errors.New("Deadline exceeded")
+		case result := <-resultChannel:
+			return result
+		}
+	}
 }
 
 func New(middlewares ...Middleware) *Scheduler {
@@ -64,9 +71,14 @@ type TaskConfig struct {
 func (s *Scheduler) RegisterTask(cfg TaskConfig) {
 	ctx, cancel := context.WithCancel(context.Background())
 
+	if cfg.Deadline < 0 {
+		cfg.Deadline = 1 * time.Hour
+	}
+
 	task := &Task{
 		Name:        cfg.Name,
 		Interval:    cfg.Interval,
+		Deadline:    cfg.Deadline,
 		Action:      cfg.Action,
 		Middlewares: cfg.Middlewares,
 		Cancel:      cancel,
@@ -91,7 +103,7 @@ func (s *Scheduler) watch(task *Task) {
 	ticker := time.NewTicker(task.Interval)
 	defer ticker.Stop()
 
-	action := task.Action
+	action := runWithTimeout(task.Action, task.Deadline)
 	for _, middleware := range task.Middlewares {
 		action = middleware(action)
 	}
@@ -112,14 +124,8 @@ func (s *Scheduler) watch(task *Task) {
 				close(done)
 			}()
 
-			if task.Deadline > 0 {
-				select {
-				case <-done:
-				case <-time.After(task.Deadline):
-				}
-			} else {
-				<-done
-			}
+			<-done
+
 		case <-task.Ctx.Done():
 			return
 		}
