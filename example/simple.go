@@ -5,24 +5,30 @@ import (
 	"time"
 
 	"github.com/eddort/scheduler"
-	"github.com/sirupsen/logrus"
 )
 
 func main() {
-	logger := logrus.New()
-	s := scheduler.New(logger)
+	s := scheduler.New()
 
-	s.RegisterTask("task1", 1*time.Second, 1*time.Second, func() {
-		fmt.Println("Executing task 1")
-		time.Sleep(2 * time.Second)
-	})
+	taskConfig := scheduler.TaskConfig{
+		Name:     "PrintTime",
+		Interval: 2 * time.Second,
+		Deadline: 3 * time.Second,
+		Action: func(payload scheduler.Payload) error {
+			fmt.Println("Current time:", time.Now())
+			return nil
+		},
+		Middlewares: []scheduler.Middleware{func(next scheduler.ActionFunc) scheduler.ActionFunc {
+			return func(payload scheduler.Payload) error {
+				fmt.Println("Before task execution:", payload.Name)
+				err := next(payload)
+				fmt.Println("After task execution:", payload.Name)
+				return err
+			}
+		}},
+	}
 
-	s.RegisterTask("task2", 2*time.Second, 1*time.Second, func() {
-		fmt.Println("Executing task with deadline error 2")
-		time.Sleep(1 * time.Second)
-	})
-
+	// Register and start the task
+	s.RegisterTask(taskConfig)
 	s.Start()
-
-	select {}
 }

@@ -1,68 +1,95 @@
-package scheduler
+package scheduler_test
 
 import (
-	"sync/atomic"
+	"errors"
 	"testing"
 	"time"
 
-	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/eddort/scheduler"
 )
 
 func TestScheduler(t *testing.T) {
-	logger, _ := test.NewNullLogger()
-	s := New(logger)
-
-	var count1 int32
-	s.RegisterTask("task1", 100*time.Millisecond, 500*time.Millisecond, func() {
-		atomic.AddInt32(&count1, 1)
-		time.Sleep(200 * time.Millisecond)
-	})
-
-	var count2 int32
-	s.RegisterTask("task2", 50*time.Millisecond, 50*time.Millisecond, func() {
-		atomic.AddInt32(&count2, 1)
-	})
-
-	s.Start()
-
-	time.Sleep(1 * time.Second)
-
-	c1 := atomic.LoadInt32(&count1)
-	c2 := atomic.LoadInt32(&count2)
-
-	assert.Greater(t, c1, int32(1), "Task 1 should have been executed more than once")
-	assert.Less(t, c1, int32(10), "Task 1 should not be executed too many times")
-
-	assert.Greater(t, c2, int32(1), "Task 2 should have been executed more than once")
-	assert.Less(t, c2, int32(25), "Task 2 should not be executed too many times")
-}
-
-func TestSchedulerDeadline(t *testing.T) {
-	logger, hook := test.NewNullLogger()
-	s := New(logger)
-
-	var count int32
-	s.RegisterTask("task3", 100*time.Millisecond, 100*time.Millisecond, func() {
-		atomic.AddInt32(&count, 1)
-		time.Sleep(200 * time.Millisecond)
-	})
-
-	s.Start()
-
-	time.Sleep(1 * time.Second)
-
-	c := atomic.LoadInt32(&count)
-
-	assert.Greater(t, c, int32(1), "Task 3 should have been executed more than once")
-	assert.Less(t, c, int32(10), "Task 3 should not be executed too many times")
-
-	found := false
-	for _, entry := range hook.AllEntries() {
-		if entry.Message == "Task task3 reached its deadline and was terminated" {
-			found = true
-			break
+	loggingMiddleware := func(next scheduler.ActionFunc) scheduler.ActionFunc {
+		return func(payload scheduler.Payload) error {
+			t.Logf("Running task: %s", payload.Name)
+			return next(payload)
 		}
 	}
-	assert.True(t, found, "Task 3 should have a deadline termination log entry")
+
+	taskExecuted := false
+
+	taskAction := func(payload scheduler.Payload) error {
+		taskExecuted = true
+		return nil
+	}
+
+	s := scheduler.New(loggingMiddleware)
+
+	s.RegisterTask(scheduler.TaskConfig{
+		Name:     "test-task",
+		Interval: time.Millisecond * 100,
+		Action:   taskAction,
+	})
+
+	time.Sleep(time.Millisecond * 200)
+
+	s.Stop()
+
+	assert.True(t, taskExecuted, "Task should be executed")
+}
+
+func TestSchedulerWithDeadline(t *testing.T) {
+	taskExecuted := false
+
+	taskAction := func(payload scheduler.Payload) error {
+		time.Sleep(time.Millisecond * 150)
+		taskExecuted = true
+		return nil
+	}
+
+	s := scheduler.New()
+
+	s.RegisterTask(scheduler.TaskConfig{
+		Name:     "test-task-deadline",
+		Interval: time.Millisecond * 100,
+		Action:   taskAction,
+		Deadline: time.Millisecond * 50,
+	})
+
+	time.Sleep(time.Millisecond * 200)
+
+	s.Stop()
+
+	assert.False(t, taskExecuted, "Task should not be executed")
+}
+
+func TestSchedulerWithMiddlewareError(t *testing.T) {
+	errorMiddleware := func(next scheduler.ActionFunc) scheduler.ActionFunc {
+		return func(payload scheduler.Payload) error {
+			return errors.New("middleware error")
+		}
+	}
+
+	taskExecuted := false
+
+	taskAction := func(payload scheduler.Payload) error {
+		taskExecuted = true
+		return nil
+	}
+
+	s := scheduler.New(errorMiddleware)
+
+	s.RegisterTask(scheduler.TaskConfig{
+		Name:     "test-task-error",
+		Interval: time.Millisecond * 100,
+		Action:   taskAction,
+	})
+
+	time.Sleep(time.Millisecond * 200)
+
+	s.Stop()
+
+	assert.False(t, taskExecuted, "Task should not be executed")
 }
