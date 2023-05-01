@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+var ErrDeadlineExceeded = errors.New("Deadline exceeded")
+
 type Registry struct {
 	wg          sync.WaitGroup
 	tasks       []*Task
@@ -44,7 +46,7 @@ func runWithTimeout(fn func(Payload) error, timeout time.Duration) ActionFunc {
 
 		select {
 		case <-ctx.Done():
-			return errors.New("Deadline exceeded")
+			return ErrDeadlineExceeded
 		case result := <-runtimeError:
 			return result
 		}

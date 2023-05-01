@@ -1,92 +1,173 @@
 package scheduler
 
 import (
+	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 )
 
-var successfulTaskCount int
-var unsuccessfulTaskCount int
-var taskCountMutex sync.Mutex
-
-func successfulTask(payload Payload) error {
-	time.Sleep(500 * time.Millisecond)
-	return nil
-}
-
-func slowTask(payload Payload) error {
-	time.Sleep(2 * time.Second)
-	return nil
-}
-func countingMiddleware(next ActionFunc) ActionFunc {
-	return func(payload Payload) error {
-		err := next(payload)
-		taskCountMutex.Lock()
-		defer taskCountMutex.Unlock()
-
-		if err == nil {
-			successfulTaskCount++
-		} else {
-			unsuccessfulTaskCount++
-		}
-		return err
-	}
-}
-
-func TestScheduler_SuccessfulTask(t *testing.T) {
-	registry := New(countingMiddleware)
-	registry.RegisterTask(TaskConfig{
-		Name:        "SuccessfulTask",
-		Interval:    1 * time.Second,
-		Action:      successfulTask,
-		Deadline:    1 * time.Second,
-		Middlewares: []Middleware{countingMiddleware},
-	})
-
-	go registry.Start()
-	time.Sleep(3 * time.Second)
-	registry.Stop()
-
-	taskCountMutex.Lock()
-	defer taskCountMutex.Unlock()
-	assert.GreaterOrEqual(t, successfulTaskCount, 2, "Expected 2 successful task executions")
-}
-
 func TestScheduler_SlowTask(t *testing.T) {
-	registry := New(countingMiddleware)
-	registry.RegisterTask(TaskConfig{
-		Name:        "SlowTask",
-		Interval:    1 * time.Second,
-		Action:      slowTask,
-		Deadline:    1 * time.Second,
-		Middlewares: []Middleware{countingMiddleware},
-	})
+	const slowTaskInterval = 2 * time.Second
+	const slowTaskDuration = 3 * time.Second
 
-	go registry.Start()
-	time.Sleep(3 * time.Second)
-	registry.Stop()
+	taskExecutionCounter := int32(0)
+	taskUnsuccessfulCounter := int32(0)
 
-	taskCountMutex.Lock()
-	defer taskCountMutex.Unlock()
-	assert.Equal(t, 2, unsuccessfulTaskCount, "Expected 2 unsuccessful task executions")
+	action := func(payload Payload) error {
+		atomic.AddInt32(&taskExecutionCounter, 1)
+
+		time.Sleep(slowTaskDuration)
+
+		return errors.New("Task unsuccessful")
+	}
+
+	taskMiddleware := func(next ActionFunc) ActionFunc {
+		return func(payload Payload) error {
+			err := next(payload)
+			if err != nil {
+				atomic.AddInt32(&taskUnsuccessfulCounter, 1)
+			}
+			return err
+		}
+	}
+
+	cfg := TaskConfig{
+		Name:        "slow_task",
+		Interval:    slowTaskInterval,
+		Action:      action,
+		Deadline:    slowTaskDuration,
+		Middlewares: []Middleware{taskMiddleware},
+	}
+
+	s := New()
+	s.RegisterTask(cfg)
+
+	// Use sync.WaitGroup for synchronization
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.Start()
+	}()
+
+	// Wait for a few task intervals to pass
+	time.Sleep(7 * time.Second)
+	s.Stop()
+
+	wg.Wait()
+
+	executionCount := atomic.LoadInt32(&taskExecutionCounter)
+	unsuccessfulCount := atomic.LoadInt32(&taskUnsuccessfulCounter)
+
+	assert.GreaterOrEqual(t, executionCount, int32(2), "Expected at least 2 task executions")
+	assert.Equal(t, executionCount, unsuccessfulCount, "Expected unsuccessful task executions to be equal to the total task executions")
+}
+func TestScheduler_SuccessfulTask(t *testing.T) {
+	const taskInterval = 1 * time.Second
+	const taskDuration = 500 * time.Millisecond
+
+	taskExecutionCounter := int32(0)
+	taskSuccessfulCounter := int32(0)
+
+	action := func(payload Payload) error {
+		atomic.AddInt32(&taskExecutionCounter, 1)
+		time.Sleep(taskDuration)
+		return nil
+	}
+
+	taskMiddleware := func(next ActionFunc) ActionFunc {
+		return func(payload Payload) error {
+			err := next(payload)
+			if err == nil {
+				atomic.AddInt32(&taskSuccessfulCounter, 1)
+			}
+			return err
+		}
+	}
+
+	cfg := TaskConfig{
+		Name:        "successful_task",
+		Interval:    taskInterval,
+		Action:      action,
+		Deadline:    2 * taskDuration,
+		Middlewares: []Middleware{taskMiddleware},
+	}
+
+	s := New()
+	s.RegisterTask(cfg)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.Start()
+	}()
+
+	time.Sleep(5 * time.Second)
+	s.Stop()
+
+	wg.Wait()
+
+	executionCount := atomic.LoadInt32(&taskExecutionCounter)
+	successfulCount := atomic.LoadInt32(&taskSuccessfulCounter)
+
+	assert.GreaterOrEqual(t, executionCount, int32(4), "Expected at least 4 task executions")
+	assert.Equal(t, executionCount, successfulCount, "Expected successful task executions to be equal to the total task executions")
 }
 
-func TestScheduler_Stop(t *testing.T) {
-	registry := New(countingMiddleware)
-	registry.RegisterTask(TaskConfig{
-		Name:        "SuccessfulTask",
-		Interval:    1 * time.Second,
-		Action:      successfulTask,
-		Deadline:    1 * time.Second,
-		Middlewares: []Middleware{countingMiddleware},
-	})
+func TestScheduler_DeadlineExceeded(t *testing.T) {
+	const taskInterval = 200 * time.Millisecond
+	const taskDuration = 300 * time.Millisecond
 
-	go registry.Start()
-	time.Sleep(3 * time.Second)
-	registry.Stop()
+	taskExecutionCounter := int32(0)
+	taskDeadlineExceededCounter := int32(0)
 
-	assert.True(t, true, "Scheduler stopped")
+	action := func(payload Payload) error {
+		atomic.AddInt32(&taskExecutionCounter, 1)
+		time.Sleep(taskDuration)
+		return nil
+	}
+
+	taskMiddleware := func(next ActionFunc) ActionFunc {
+		return func(payload Payload) error {
+			err := next(payload)
+			if errors.Is(err, ErrDeadlineExceeded) {
+				atomic.AddInt32(&taskDeadlineExceededCounter, 1)
+			}
+			return err
+		}
+	}
+
+	cfg := TaskConfig{
+		Name:        "deadline_exceeded_task",
+		Interval:    taskInterval,
+		Action:      action,
+		Deadline:    taskDuration - 100*time.Millisecond,
+		Middlewares: []Middleware{taskMiddleware},
+	}
+
+	s := New()
+	s.RegisterTask(cfg)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.Start()
+	}()
+
+	time.Sleep(700 * time.Millisecond)
+	s.Stop()
+
+	wg.Wait()
+
+	executionCount := atomic.LoadInt32(&taskExecutionCounter)
+	deadlineExceededCount := atomic.LoadInt32(&taskDeadlineExceededCounter)
+
+	assert.GreaterOrEqual(t, executionCount, int32(3), "Expected at least 3 task executions")
+	assert.Equal(t, executionCount, deadlineExceededCount, "Expected deadline exceeded task executions to be equal to the total task executions")
 }
