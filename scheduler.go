@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-type Scheduler struct {
+type Registry struct {
 	wg          sync.WaitGroup
 	tasks       []*Task
 	middlewares *[]Middleware
@@ -37,22 +37,22 @@ func runWithTimeout(fn func(Payload) error, timeout time.Duration) ActionFunc {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
-		resultChannel := make(chan error, 1)
+		runtimeError := make(chan error, 1)
 		go func() {
-			resultChannel <- fn(payload)
+			runtimeError <- fn(payload)
 		}()
 
 		select {
 		case <-ctx.Done():
 			return errors.New("Deadline exceeded")
-		case result := <-resultChannel:
+		case result := <-runtimeError:
 			return result
 		}
 	}
 }
 
-func New(middlewares ...Middleware) *Scheduler {
-	s := &Scheduler{
+func New(middlewares ...Middleware) *Registry {
+	s := &Registry{
 		tasks:       make([]*Task, 0),
 		middlewares: &middlewares,
 	}
@@ -68,7 +68,7 @@ type TaskConfig struct {
 	Middlewares []Middleware
 }
 
-func (s *Scheduler) RegisterTask(cfg TaskConfig) {
+func (s *Registry) RegisterTask(cfg TaskConfig) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	if cfg.Deadline < 0 {
@@ -89,7 +89,7 @@ func (s *Scheduler) RegisterTask(cfg TaskConfig) {
 
 }
 
-func (s *Scheduler) Start() {
+func (s *Registry) Start() {
 	for _, task := range s.tasks {
 		s.wg.Add(1)
 		go s.watch(task)
@@ -97,7 +97,7 @@ func (s *Scheduler) Start() {
 	s.wg.Wait()
 }
 
-func (s *Scheduler) watch(task *Task) {
+func (s *Registry) watch(task *Task) {
 	defer s.wg.Done()
 
 	ticker := time.NewTicker(task.Interval)
@@ -133,7 +133,7 @@ func (s *Scheduler) watch(task *Task) {
 
 }
 
-func (s *Scheduler) Stop() {
+func (s *Registry) Stop() {
 	for _, task := range s.tasks {
 		task.Cancel()
 	}
